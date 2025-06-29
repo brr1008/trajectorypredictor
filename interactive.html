@@ -3,9 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Interactive Trajectory Planner</title>
+    <title>Interactive Flight Trajectory Simulator</title>
+    <!-- Tailwind CSS CDN for styling -->
     <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Three.js CDN -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <!-- OrbitControls for camera interaction -->
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script> 
 
     <style>
@@ -33,7 +36,7 @@
         .btn-primary:hover {
             background-color: #2ea043;
         }
-        input[type="number"], select {
+        input[type="number"], select, input[type="range"] {
             background-color: #0d1117;
             border: 1px solid #30363d;
             color: #c9d1d9;
@@ -75,29 +78,48 @@
     </style>
 </head>
 <body class="flex flex-col md:flex-row h-screen">
+    <!-- Control Panel -->
     <div class="w-full md:w-1/4 p-4 space-y-4 overflow-y-auto bg-[#0d1117] shadow-lg rounded-lg m-2">
         <h1 class="text-2xl font-bold text-center text-white mb-4">Trajectory Planner</h1>
 
+        <!-- Initial Parameters -->
         <div class="input-group p-4 rounded-lg">
             <h2 class="text-lg font-semibold mb-2">Launch Parameters</h2>
+            <p class="text-xs text-gray-400 mb-2">Launches simulated from CCAFS LC-40</p>
+
             <label for="initialVelocity" class="block text-sm font-medium mb-1">Initial Velocity (km/s):</label>
-            <input type="number" id="initialVelocity" value="10" min="0" step="0.1"
+            <input type="number" id="initialVelocity" value="7.8" min="0" step="0.1"
                    class="w-full p-2 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 mb-3">
 
             <label for="launchAngle" class="block text-sm font-medium mb-1">Launch Angle (degrees from horizontal):</label>
-            <input type="number" id="launchAngle" value="45" min="0" max="90" step="1"
+            <input type="number" id="launchAngle" value="89" min="0" max="90" step="1"
                    class="w-full p-2 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 mb-3">
-
+            
             <label for="launchAltitude" class="block text-sm font-medium mb-1">Launch Altitude (km from Earth surface):</label>
             <input type="number" id="launchAltitude" value="100" min="0" step="10"
                    class="w-full p-2 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 mb-3">
         </div>
 
-        <button id="calculateTrajectory"
-                class="btn-primary w-full p-3 rounded-md font-semibold text-white shadow-lg transition duration-200">
-            Calculate Trajectory
-        </button>
+        <!-- Animation Controls -->
+        <div class="input-group p-4 rounded-lg">
+            <h2 class="text-lg font-semibold mb-2">Simulation Controls</h2>
+            <label for="animationSpeed" class="block text-sm font-medium mb-1">Animation Speed:</label>
+            <input type="range" id="animationSpeed" min="0.1" max="5" value="1" step="0.1"
+                   class="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer range-lg mb-3">
+            <span id="animationSpeedValue" class="text-sm text-gray-400 float-right">1.0x</span>
 
+            <button id="startSimulation"
+                    class="btn-primary w-full p-3 rounded-md font-semibold text-white shadow-lg transition duration-200 mb-2">
+                Start Simulation
+            </button>
+            <button id="resetSimulation"
+                    class="bg-gray-700 hover:bg-gray-600 text-white w-full p-3 rounded-md font-semibold shadow-lg transition duration-200">
+                Reset Simulation
+            </button>
+        </div>
+
+
+        <!-- SpaceX Data Integration -->
         <div class="input-group p-4 rounded-lg">
             <h2 class="text-lg font-semibold mb-2">SpaceX Data Integration</h2>
             <p class="text-sm text-gray-400 mb-3">
@@ -111,6 +133,7 @@
         </div>
     </div>
 
+    <!-- 3D Visualization Canvas -->
     <div class="flex-1 relative">
         <canvas id="spaceCanvas" class="w-full h-full"></canvas>
         <div id="loadingIndicator" class="absolute inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center text-white text-xl z-10 hidden">
@@ -125,18 +148,26 @@
 
         // --- Three.js Setup ---
         let scene, camera, renderer, controls;
-        let earth, trajectoryLine, stars;
+        let earth, trajectoryLine, stars, spacecraft;
         const G = 6.67430e-11; // Gravitational constant (m^3 kg^-1 s^-2)
         const EARTH_MASS = 5.972e24; // Earth's mass (kg)
         const EARTH_RADIUS_KM = 6371; // Earth's radius (km)
+        const EARTH_ANGULAR_VELOCITY = (2 * Math.PI) / (24 * 3600); // Radians per second
 
         const SCALE_FACTOR = 0.0001; // Scale down kilometers to Three.js units for better visualization
         const EARTH_RADIUS_SCALED = EARTH_RADIUS_KM * SCALE_FACTOR;
+        const SPACECRAFT_SIZE_SCALED = EARTH_RADIUS_SCALED * 0.02; // Small size for spacecraft
 
         let spacexLaunchSiteGroup; // Group to hold SpaceX launch site markers
 
+        // Default launch site for simulated trajectory (CCAFS LC-40)
+        const DEFAULT_LAUNCH_SITE = { latitude: 28.5619, longitude: -80.5772 };
+
+        let trajectoryPoints = [];
+        let currentTrajectoryPointIndex = 0;
+        let animationActive = false;
+
         // Raw SpaceX launch data from your prompt
-        // This is a direct copy-paste of the text you provided.
         const rawSpaceXData = `
         12010-06-0418:45:00F9 v1.0 B0003CCAFS LC-40Dragon Spacecraft Qualification UnitLEOSpaceXSuccess
         22010-12-0815:43:00F9 v1.0 B0004CCAFS LC-40Dragon demo flight C1, two CubeSats, barrel of Brouère cheeseLEO (ISS)NASA (COTS) NROSuccess
@@ -185,7 +216,7 @@
         452017-12-1515:36:00F9 FT B1035.2CCAFS SLC-40SpaceX CRS-132,205 LEO (ISS)NASA (CRS)Success
         462017-12-231:27:00F9 FT B1036.2VAFB SLC-4EIridium NEXT 49,600 Polar LEOIridium CommunicationsSuccess
         472018-01-081:00:00F9 B4 B1043.1CCAFS SLC-40ZumaClassifiedLEONorthrop GrummanSuccess (payload status unclear)
-        482018-01-3121:25:00F9 FT B1032.2CCAFS SLC-40GovSat-1 / SES-164,230 GTOSESSuccess
+        482018-01-3121:25:00F9 FT B1032.2CCAFS LC-40GovSat-1 / SES-164,230 GTOSESSuccess
         FH 12018-02-0620:45:00B1023.2 (side) , Heavy core B1033, B1025.2 (side)KSC LC-39AElon Musk's Tesla Roadster~1,250 Heliocentric 0.99–1.67 AU (close to Mars transfer orbit)SpaceXSuccess
         492018-02-2214:17:00F9 FT B1038.2VAFB SLC-4EPaz Tintin A & B2,150 SSOHisdesat exactEarth SpaceXSuccess
         502018-03-065:33:00F9 B4 B1044CCAFS SLC-40Hispasat 30W-6 PODSat6,092 GTOHispasat NovaWurksSuccess
@@ -204,7 +235,6 @@
             "VAFB SLC-4E": { latitude: 34.632, longitude: -120.6108 },
             // Add any other launch sites found in the actual full dataset, if applicable
         };
-
 
         // Function to show a temporary message
         function showMessage(message, type = 'error') {
@@ -258,8 +288,22 @@
             scene.add(directionalLight);
 
             // Earth
+            const textureLoader = new THREE.TextureLoader();
+            const earthTexture = textureLoader.load('https://placehold.co/2048x1024/0077ff/ffffff?text=EARTH+TEXTURE',
+                () => { // On load callback
+                    console.log("Earth texture loaded.");
+                    render();
+                },
+                undefined, // On progress callback
+                (err) => { // On error callback
+                    console.error('Error loading earth texture:', err);
+                    // Fallback to solid color if texture fails
+                    earthMaterial.color.set(0x0077ff);
+                    render();
+                }
+            );
             const earthGeometry = new THREE.SphereGeometry(EARTH_RADIUS_SCALED, 64, 64);
-            const earthMaterial = new THREE.MeshPhongMaterial({ color: 0x0077ff, emissive: 0x000022 }); // Blueish, slightly glowing
+            const earthMaterial = new THREE.MeshPhongMaterial({ map: earthTexture, emissive: 0x000022, emissiveIntensity: 0.1 });
             earth = new THREE.Mesh(earthGeometry, earthMaterial);
             scene.add(earth);
 
@@ -279,9 +323,14 @@
 
             // Initial trajectory line (empty)
             const material = new THREE.LineBasicMaterial({ color: 0xffa500 }); // Orange trajectory
-            const points = [];
             trajectoryLine = new THREE.Line(new THREE.BufferGeometry(), material);
             scene.add(trajectoryLine);
+
+            // Spacecraft object
+            const spacecraftGeometry = new THREE.SphereGeometry(SPACECRAFT_SIZE_SCALED, 16, 16);
+            const spacecraftMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff }); // White spacecraft
+            spacecraft = new THREE.Mesh(spacecraftGeometry, spacecraftMaterial);
+            scene.add(spacecraft); // Add to scene, its position will be updated during animation
 
             // Group for SpaceX launch sites
             spacexLaunchSiteGroup = new THREE.Group();
@@ -290,13 +339,16 @@
             loadingIndicator.classList.add('hidden');
 
             window.addEventListener('resize', onWindowResize, false);
-            document.getElementById('calculateTrajectory').addEventListener('click', calculateAndDrawTrajectory);
+            document.getElementById('startSimulation').addEventListener('click', startSimulation);
+            document.getElementById('resetSimulation').addEventListener('click', resetSimulation);
             document.getElementById('toggleSpaceXSites').addEventListener('change', toggleSpaceXSitesVisibility);
+            document.getElementById('animationSpeed').addEventListener('input', updateAnimationSpeedLabel);
 
             // Load SpaceX data on initialization
             loadSpaceXData();
 
             animate();
+            resetSimulation(); // Set initial state of spacecraft and trajectory
         }
 
         // Handle window resizing
@@ -312,6 +364,20 @@
         function animate() {
             requestAnimationFrame(animate);
             controls.update(); // Only required if controls.enableDamping is set to true
+
+            if (animationActive && trajectoryPoints.length > 0) {
+                const animationSpeed = parseFloat(document.getElementById('animationSpeed').value);
+                currentTrajectoryPointIndex += animationSpeed;
+
+                if (currentTrajectoryPointIndex < trajectoryPoints.length) {
+                    // Update spacecraft position
+                    const point = trajectoryPoints[Math.floor(currentTrajectoryPointIndex)];
+                    spacecraft.position.copy(point);
+                } else {
+                    animationActive = false; // Animation finished
+                    showMessage("Simulation complete!", 'success');
+                }
+            }
             render();
         }
 
@@ -323,24 +389,69 @@
         // --- Trajectory Calculation (Simplified Newtonian Gravity) ---
         function calculateTrajectory(initialVelocityKmPerSec, launchAngleDeg, launchAltitudeKm) {
             const points = [];
-            // Start position relative to Earth's center
-            let position = new THREE.Vector3(0, EARTH_RADIUS_KM + launchAltitudeKm, 0);
-            position.multiplyScalar(SCALE_FACTOR); // Scale to Three.js units
 
-            // Convert velocity from km/s to m/s for physics calculation, then scale
-            let velocityMagnitude = initialVelocityKmPerSec * 1000; // m/s
-            let launchAngleRad = THREE.MathUtils.degToRad(launchAngleDeg);
+            const launchLatRad = THREE.MathUtils.degToRad(DEFAULT_LAUNCH_SITE.latitude);
+            const launchLonRad = THREE.MathUtils.degToRad(DEFAULT_LAUNCH_SITE.longitude);
 
-            // For simplicity, defining velocity as components based on angle from horizontal.
-            // Launch is from (0, R+H, 0). Horizontal is effectively along Z, Vertical along Y.
-            const velY_local = velocityMagnitude * Math.sin(launchAngleRad); // Radial component
-            const velZ_local = velocityMagnitude * Math.cos(launchAngleRad); // Tangential component (along Z-axis)
+            // Initial position of the spacecraft from Earth's center (in scaled Three.js units)
+            let position = latLonToCartesian(DEFAULT_LAUNCH_SITE.latitude, DEFAULT_LAUNCH_SITE.longitude, EARTH_RADIUS_SCALED + (launchAltitudeKm * SCALE_FACTOR));
 
-            let velocity = new THREE.Vector3(0, velY_local, velZ_local);
-            velocity.multiplyScalar(SCALE_FACTOR); // Scale for Three.js units
+            // Calculate Earth's rotational velocity at the launch latitude (in m/s)
+            const earthRotationalVelocityMPS = EARTH_ANGULAR_VELOCITY * EARTH_RADIUS_KM * 1000 * Math.cos(launchLatRad);
 
-            const dt = 10; // Time step in seconds
-            const maxSteps = 2000; // Max steps to prevent infinite loops
+            // Convert initial velocity from km/s to m/s
+            let initialVelocityMPS = initialVelocityKmPerSec * 1000;
+
+            // Calculate local "up" (radial) and "east" (tangential) vectors at launch site
+            const radialUp = position.clone().normalize(); // Vector pointing away from Earth's center
+            
+            // Tangent direction (Eastward): Perpendicular to radial and aligned with Earth's rotation
+            // This is a vector along the line of latitude, pointing East.
+            // Simplified: Cross radial-up with global north (0,1,0) to get a vector approx eastward in the XZ plane for 0 longitude, then adjust.
+            // More accurately, construct the tangent vector in the local horizontal plane.
+            // For a point (x,y,z) on sphere, tangent plane normal is (x,y,z).
+            // Eastward vector is derivative of (R*cos(lat)*cos(lon), R*sin(lat), R*cos(lat)*sin(lon)) with respect to lon.
+            const tangentEast = new THREE.Vector3(
+                -Math.sin(launchLonRad),
+                0, // Assuming constant latitude for this calculation
+                Math.cos(launchLonRad)
+            ).normalize(); // This vector is in the XZ plane if the launch site is on equator
+
+            // To get a true local tangent eastward vector for arbitrary lat/lon:
+            const northPole = new THREE.Vector3(0,1,0); // Global Y-axis is North pole direction
+            const tangentEastActual = radialUp.clone().cross(northPole).normalize();
+            // This cross product gives a vector pointing East if the radial is from the equator,
+            // but needs careful re-evaluation for higher latitudes.
+            // A simpler way for this simplified simulation:
+            // Assuming launch velocity horizontal component is primarily eastward.
+
+            // Initial velocity components (in m/s)
+            // Vertical component (radial from Earth's surface)
+            const velVerticalMPS = initialVelocityMPS * Math.sin(launchAngleDeg * Math.PI / 180);
+            // Horizontal component (tangential to Earth's surface, includes Earth's rotation)
+            const velHorizontalMPS = initialVelocityMPS * Math.cos(launchAngleDeg * Math.PI / 180) + earthRotationalVelocityMPS;
+
+            // Define the initial velocity vector in 3D space
+            // This part is crucial and simplified:
+            // We need velocity in the direction of 'up' (radial) and 'east' (tangential).
+            // The position vector `position` points from Earth center to launch site.
+            // `radialUp` is the 'up' direction.
+            // For 'east', we need a vector perpendicular to `radialUp` and `northPole`.
+            let initialVelocityVector = new THREE.Vector3();
+            // Add radial component
+            initialVelocityVector.add(radialUp.clone().multiplyScalar(velVerticalMPS));
+            // Add tangential (eastward) component
+            const localEast = new THREE.Vector3().crossVectors(new THREE.Vector3(0,1,0), radialUp).normalize(); // Approximates East
+            initialVelocityVector.add(localEast.clone().multiplyScalar(velHorizontalMPS));
+
+            // Scale velocity vector for Three.js units
+            initialVelocityVector.multiplyScalar(SCALE_FACTOR);
+
+            let velocity = initialVelocityVector; // Current velocity vector (scaled)
+
+            const dt = 1; // Time step in seconds (reduced for more accuracy)
+            const maxSimulationTime = 3600 * 6; // Max 6 hours of simulation time (in seconds)
+            const maxSteps = maxSimulationTime / dt; // Max steps based on simulation time
 
             for (let i = 0; i < maxSteps; i++) {
                 points.push(position.clone());
@@ -349,36 +460,36 @@
                 const distanceToEarthCenter = position.length(); // In scaled units
                 const distanceToEarthCenterMeters = distanceToEarthCenter / SCALE_FACTOR; // Back to meters
 
-                if (distanceToEarthCenterMeters < EARTH_RADIUS_KM * 1000 * 10 && distanceToEarthCenterMeters > (EARTH_RADIUS_KM * 1000 * 0.95)) { // Keep calculation within a reasonable range and avoid going too deep
-                    const forceMagnitude = (G * EARTH_MASS) / (distanceToEarthCenterMeters * distanceToEarthCenterMeters);
-                    const direction = position.clone().normalize().negate(); // Towards Earth center
-                    const acceleration = direction.multiplyScalar(forceMagnitude * SCALE_FACTOR); // Scaled acceleration
-
-                    // Update velocity and position
-                    velocity.add(acceleration.clone().multiplyScalar(dt));
-                    position.add(velocity.clone().multiplyScalar(dt));
-
-                    // Check if crashed into Earth
-                    if (position.length() < EARTH_RADIUS_SCALED) {
-                        // Trajectory hit Earth
-                        showMessage("Trajectory impacted Earth!", 'error');
-                        break;
-                    }
-                } else if (distanceToEarthCenterMeters >= EARTH_RADIUS_KM * 1000 * 10) {
-                    // Went too far, assumed escaped or lost
-                    showMessage("Trajectory escaped Earth's influence!", 'success');
-                    break;
-                } else {
-                    // Very close to center, indicating potential issue or already crashed.
-                    showMessage("Trajectory calculation halted (too close to Earth's surface or error).", 'error');
+                // Check for collision with Earth
+                if (distanceToEarthCenter < EARTH_RADIUS_SCALED) {
+                    // Trajectory hit Earth
+                    showMessage("Trajectory impacted Earth!", 'error');
                     break;
                 }
+                
+                // If it goes too far, assume escape
+                if (distanceToEarthCenterMeters >= EARTH_RADIUS_KM * 1000 * 20) { // Limit to 20x Earth radius for simulation
+                     showMessage("Trajectory escaped Earth's influence!", 'success');
+                     break;
+                }
+
+                // Calculate acceleration due to gravity (in m/s^2)
+                const forceMagnitude = (G * EARTH_MASS) / (distanceToEarthCenterMeters * distanceToEarthCenterMeters);
+                const direction = position.clone().normalize().negate(); // Towards Earth center
+                const accelerationMPS2 = direction.multiplyScalar(forceMagnitude); // in m/s^2
+
+                // Scale acceleration for Three.js units
+                const accelerationScaled = accelerationMPS2.multiplyScalar(SCALE_FACTOR);
+
+                // Update velocity and position using scaled values
+                velocity.add(accelerationScaled.clone().multiplyScalar(dt));
+                position.add(velocity.clone().multiplyScalar(dt));
             }
             return points;
         }
 
-        // Update the trajectory visualization
-        function calculateAndDrawTrajectory() {
+        // Starts the simulation (calculates trajectory and begins animation)
+        function startSimulation() {
             const initialVelocity = parseFloat(document.getElementById('initialVelocity').value);
             const launchAngle = parseFloat(document.getElementById('launchAngle').value);
             const launchAltitude = parseFloat(document.getElementById('launchAltitude').value);
@@ -388,21 +499,54 @@
                 return;
             }
 
-            // Remove existing trajectory if any
-            if (trajectoryLine) {
-                scene.remove(trajectoryLine);
-                trajectoryLine.geometry.dispose(); // Clean up old geometry
-            }
+            // Clear previous trajectory and reset spacecraft
+            resetSimulation();
 
-            const trajectoryPoints = calculateTrajectory(initialVelocity, launchAngle, launchAltitude);
+            // Calculate the new trajectory
+            trajectoryPoints = calculateTrajectory(initialVelocity, launchAngle, launchAltitude);
 
+            // Draw the full trajectory line
             const geometry = new THREE.BufferGeometry().setFromPoints(trajectoryPoints);
             const material = new THREE.LineBasicMaterial({ color: 0xffa500 });
             trajectoryLine = new THREE.Line(geometry, material);
             scene.add(trajectoryLine);
 
-            showMessage("Trajectory calculated!", 'success');
+            // Start animation if trajectory exists
+            if (trajectoryPoints.length > 0) {
+                animationActive = true;
+                currentTrajectoryPointIndex = 0;
+                // Place spacecraft at the very beginning of the trajectory
+                spacecraft.position.copy(trajectoryPoints[0]);
+                showMessage("Simulation started!", 'success');
+            } else {
+                showMessage("No trajectory generated. Check parameters.", 'error');
+            }
             render();
+        }
+
+        // Resets the simulation state
+        function resetSimulation() {
+            animationActive = false;
+            currentTrajectoryPointIndex = 0;
+
+            // Remove existing trajectory line if any
+            if (trajectoryLine) {
+                scene.remove(trajectoryLine);
+                trajectoryLine.geometry.dispose(); // Clean up old geometry
+            }
+
+            // Place spacecraft back to its initial launch position (CCAFS LC-40 + altitude)
+            const initialSpacecraftPosition = latLonToCartesian(DEFAULT_LAUNCH_SITE.latitude, DEFAULT_LAUNCH_SITE.longitude, EARTH_RADIUS_SCALED + (parseFloat(document.getElementById('launchAltitude').value) * SCALE_FACTOR));
+            spacecraft.position.copy(initialSpacecraftPosition);
+
+            showMessage("Simulation reset.", 'info'); // Using 'info' for a neutral message
+            render();
+        }
+
+        // Updates the animation speed label dynamically
+        function updateAnimationSpeedLabel() {
+            const speedValue = parseFloat(document.getElementById('animationSpeed').value);
+            document.getElementById('animationSpeedValue').textContent = `${speedValue.toFixed(1)}x`;
         }
 
         // --- SpaceX Data Integration Functions ---
@@ -413,8 +557,7 @@
             const parsedData = [];
 
             lines.forEach(line => {
-                // Trim whitespace and remove leading/trailing numbers like "1", "2", "FH 1"
-                // This regex captures the launch site assuming it's one of the known ones
+                // This regex specifically looks for the known launch site strings
                 const match = line.match(/(CCAFS LC-40|KSC LC-39A|VAFB SLC-4E)/);
                 
                 if (match && match[1]) {
@@ -431,22 +574,15 @@
             return parsedData;
         }
 
-
-        // Function to convert Lat/Lon to 3D coordinates on a sphere
-        // Note: Three.js default is Y-up. Standard spherical coordinates often use Z-up.
-        // This function assumes Y-up (latitude is Y, longitude rotates around Y).
+        // Function to convert Lat/Lon to 3D coordinates on a sphere (Y-up)
         function latLonToCartesian(lat, lon, radius) {
             const latRad = THREE.MathUtils.degToRad(lat);
             const lonRad = THREE.MathUtils.degToRad(lon);
 
-            // Convert to Cartesian coordinates (Y-up)
-            // Longitude 0 is typically along the positive X-axis in a Z-up system,
-            // or along the positive Z-axis in a Y-up system if looking from +X.
-            // Let's set it up so 0 longitude is along positive X (if that's where your globe texture starts).
-            // A common way for Y-up:
-            const x = radius * Math.cos(latRad) * Math.cos(lonRad); // X-axis at 0 longitude
-            const y = radius * Math.sin(latRad);                   // Y-axis for latitude (up/down)
-            const z = radius * Math.cos(latRad) * Math.sin(lonRad); // Z-axis for longitude (forward/backward)
+            // X-axis is along equator at 0 longitude, Y-axis is up (North Pole), Z-axis is along equator at +90 longitude
+            const x = radius * Math.cos(latRad) * Math.cos(lonRad);
+            const y = radius * Math.sin(latRad);
+            const z = radius * Math.cos(latRad) * Math.sin(lonRad);
             
             return new THREE.Vector3(x, y, z);
         }
@@ -506,7 +642,7 @@
         // Start the application when the window loads
         window.onload = function() {
             init();
-            calculateAndDrawTrajectory(); // Draw initial trajectory on load
+            updateAnimationSpeedLabel(); // Initialize the speed label
         };
 
     </script>
