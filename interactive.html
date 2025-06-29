@@ -1,32 +1,514 @@
 <!DOCTYPE html>
 <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title> Interactive Trajectory Planner</title>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive Trajectory Planner</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script> 
 
-        <!-- tailwind css cdn for styling -->
-         <script src="https://cdn.tailwindcss.com"></script>
-         <script src="https://cdn.jsdelivr.net/npm/flowbite@1.6.5/dist/flowbite.min.js"></script>
-         <style>
-            body {
-                font-family: 'Inter', sans-serif;
-                background-color: #0d1117;
-                color: #c9d1d9;
-                margin: 0;
-                overflow: hidden;
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0d1117; /* Dark background */
+            color: #c9d1d9; /* Light text */
+            margin: 0;
+            overflow: hidden; /* Prevent scrollbars from layout issues */
+        }
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            background-color: #000; /* Black background for space */
+        }
+        .input-group {
+            background-color: #161b22; /* Slightly lighter dark for input groups */
+            border: 1px solid #30363d;
+        }
+        .btn-primary {
+            background-color: #238636; /* Green for primary action */
+            border: 1px solid #238636;
+        }
+        .btn-primary:hover {
+            background-color: #2ea043;
+        }
+        input[type="number"], select {
+            background-color: #0d1117;
+            border: 1px solid #30363d;
+            color: #c9d1d9;
+        }
+        .checkbox-container {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+            user-select: none; /* Prevent text selection */
+        }
+        .checkbox-container input[type="checkbox"] {
+            appearance: none;
+            -webkit-appearance: none;
+            width: 18px;
+            height: 18px;
+            border: 2px solid #30363d;
+            border-radius: 4px;
+            background-color: #161b22;
+            cursor: pointer;
+            position: relative;
+            flex-shrink: 0;
+        }
+        .checkbox-container input[type="checkbox"]:checked {
+            background-color: #238636;
+            border-color: #238636;
+        }
+        .checkbox-container input[type="checkbox"]:checked::before {
+            content: '\2713'; /* Checkmark character */
+            display: block;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-size: 14px;
+            line-height: 1;
+        }
+    </style>
+</head>
+<body class="flex flex-col md:flex-row h-screen">
+    <div class="w-full md:w-1/4 p-4 space-y-4 overflow-y-auto bg-[#0d1117] shadow-lg rounded-lg m-2">
+        <h1 class="text-2xl font-bold text-center text-white mb-4">Trajectory Planner</h1>
+
+        <div class="input-group p-4 rounded-lg">
+            <h2 class="text-lg font-semibold mb-2">Launch Parameters</h2>
+            <label for="initialVelocity" class="block text-sm font-medium mb-1">Initial Velocity (km/s):</label>
+            <input type="number" id="initialVelocity" value="10" min="0" step="0.1"
+                   class="w-full p-2 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 mb-3">
+
+            <label for="launchAngle" class="block text-sm font-medium mb-1">Launch Angle (degrees from horizontal):</label>
+            <input type="number" id="launchAngle" value="45" min="0" max="90" step="1"
+                   class="w-full p-2 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 mb-3">
+
+            <label for="launchAltitude" class="block text-sm font-medium mb-1">Launch Altitude (km from Earth surface):</label>
+            <input type="number" id="launchAltitude" value="100" min="0" step="10"
+                   class="w-full p-2 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 mb-3">
+        </div>
+
+        <button id="calculateTrajectory"
+                class="btn-primary w-full p-3 rounded-md font-semibold text-white shadow-lg transition duration-200">
+            Calculate Trajectory
+        </button>
+
+        <div class="input-group p-4 rounded-lg">
+            <h2 class="text-lg font-semibold mb-2">SpaceX Data Integration</h2>
+            <p class="text-sm text-gray-400 mb-3">
+                Visualize historical SpaceX launch sites.
+            </p>
+            <label class="checkbox-container">
+                <input type="checkbox" id="toggleSpaceXSites" checked>
+                Show Historical Launch Sites
+            </label>
+            <div id="spacexDataStatus" class="text-sm text-gray-500 mt-2">Loading SpaceX data...</div>
+        </div>
+    </div>
+
+    <div class="flex-1 relative">
+        <canvas id="spaceCanvas" class="w-full h-full"></canvas>
+        <div id="loadingIndicator" class="absolute inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center text-white text-xl z-10 hidden">
+            Loading 3D Environment...
+        </div>
+        <div id="messageBox" class="hidden absolute top-4 left-1/2 -translate-x-1/2 p-3 bg-red-600 text-white rounded-md shadow-lg z-20"></div>
+    </div>
+
+    <script type="module">
+        // Basic configuration for API key, if needed for future LLM calls.
+        const apiKey = ""; // Keep this empty; Canvas provides it at runtime.
+
+        // --- Three.js Setup ---
+        let scene, camera, renderer, controls;
+        let earth, trajectoryLine, stars;
+        const G = 6.67430e-11; // Gravitational constant (m^3 kg^-1 s^-2)
+        const EARTH_MASS = 5.972e24; // Earth's mass (kg)
+        const EARTH_RADIUS_KM = 6371; // Earth's radius (km)
+
+        const SCALE_FACTOR = 0.0001; // Scale down kilometers to Three.js units for better visualization
+        const EARTH_RADIUS_SCALED = EARTH_RADIUS_KM * SCALE_FACTOR;
+
+        let spacexLaunchSiteGroup; // Group to hold SpaceX launch site markers
+
+        // Raw SpaceX launch data from your prompt
+        // This is a direct copy-paste of the text you provided.
+        const rawSpaceXData = `
+        12010-06-0418:45:00F9 v1.0 B0003CCAFS LC-40Dragon Spacecraft Qualification UnitLEOSpaceXSuccess
+        22010-12-0815:43:00F9 v1.0 B0004CCAFS LC-40Dragon demo flight C1, two CubeSats, barrel of Brouère cheeseLEO (ISS)NASA (COTS) NROSuccess
+        32012-05-227:44:00F9 v1.0 B0005CCAFS LC-40Dragon demo flight C2+525 LEO (ISS)NASA (COTS)Success
+        42012-10-080:35:00F9 v1.0 B0006CCAFS LC-40SpaceX CRS-1500 LEO (ISS)NASA (CRS)Success
+        52013-03-0115:10:00F9 v1.0 B0007CCAFS LC-40SpaceX CRS-2677 LEO (ISS)NASA (CRS)Success
+        62013-09-2916:00:00F9 v1.1 B1003VAFB SLC-4ECASSIOPE500 Polar LEOMDASuccess
+        72013-12-0322:41:00F9 v1.1CCAFS LC-40SES-83,170 GTOSESSuccess
+        82014-01-0622:06:00F9 v1.1CCAFS LC-40Thaicom 63,325 GTOThaicomSuccess
+        92014-04-1819:25:00F9 v1.1CCAFS LC-40SpaceX CRS-32,296 LEO (ISS)NASA (CRS)Success
+        102014-07-1415:15:00F9 v1.1CCAFS LC-40OG2 Mission 1 6 Orbcomm-OG2 satellites1,316 LEOOrbcommSuccess
+        112014-08-058:00:00F9 v1.1CCAFS LC-40AsiaSat 84,535 GTOAsiaSatSuccess
+        122014-09-075:00:00F9 v1.1 B1011CCAFS LC-40AsiaSat 64,428 GTOAsiaSatSuccess
+        132014-09-215:52:00F9 v1.1 B1010CCAFS LC-40SpaceX CRS-42,216 LEO (ISS)NASA (CRS)Success
+        142015-01-109:47:00F9 v1.1 B1012CCAFS LC-40SpaceX CRS-52,395 LEO (ISS)NASA (CRS)Success
+        152015-02-1123:03:00F9 v1.1 B1013CCAFS LC-40DSCOVR570 Sun–Earth L1U.S. Air Force NASA NOAASuccess
+        162015-03-023:50:00F9 v1.1 B1014CCAFS LC-40ABS-3A Eutelsat 115 West B4,159 GTOABS EutelsatSuccess
+        172015-04-1420:10:00F9 v1.1 B1015CCAFS LC-40SpaceX CRS-61,898 LEO (ISS)NASA (CRS)Success
+        182015-04-2723:03:00F9 v1.1 B1016CCAFS LC-40TürkmenÄlem 52°E / MonacoSAT4,707 GTOTurkmenistan National Space AgencySuccess
+        192015-06-2814:21:00F9 v1.1 B1018CCAFS LC-40SpaceX CRS-71,952 LEO (ISS)NASA (CRS)Failure (in flight)
+        202015-12-221:29:00F9 FT B1019CCAFS LC-40OG2 Mission 2 11 Orbcomm-OG2 satellites2,034 LEOOrbcommSuccess
+        212016-01-1718:42:00F9 v1.1 B1017VAFB SLC-4EJason-3553 LEONASA (LSP) NOAA CNESSuccess
+        222016-03-0423:35:00F9 FT B1020CCAFS LC-40SES-95,271 GTOSESSuccess
+        232016-04-0820:43:00F9 FT B1021.1CCAFS LC-40SpaceX CRS-83,136 LEO (ISS)NASA (CRS)Success
+        242016-05-065:21:00F9 FT B1022CCAFS LC-40JCSAT-144,696 GTOSKY Perfect JSAT GroupSuccess
+        252016-05-2721:39:00F9 FT B1023.1CCAFS LC-40Thaicom 83,100 GTOThaicomSuccess
+        262016-06-1514:29:00F9 FT B1024CCAFS LC-40ABS-2A Eutelsat 117 West B3,600 GTOABS EutelsatSuccess
+        272016-07-184:45:00F9 FT B1025.1CCAFS LC-40SpaceX CRS-92,257 LEO (ISS)NASA (CRS)Success
+        282016-08-145:26:00F9 FT B1026CCAFS LC-40JCSAT-164,600 GTOSKY Perfect JSAT GroupSuccess
+        292017-01-1417:54:00F9 FT B1029.1VAFB SLC-4EIridium NEXT 19,600 Polar LEOIridium CommunicationsSuccess
+        302017-02-1914:39:00F9 FT B1031.1KSC LC-39ASpaceX CRS-102,490 LEO (ISS)NASA (CRS)Success
+        312017-03-166:00:00F9 FT B1030KSC LC-39AEchoStar 235,600 GTOEchoStarSuccess
+        322017-03-3022:27:00F9 FT B1021.2KSC LC-39ASES-105,300 GTOSESSuccess
+        332017-05-0111:15:00F9 FT B1032.1KSC LC-39ANROL-76ClassifiedLEONROSuccess
+        342017-05-1523:21:00F9 FT B1034KSC LC-39AInmarsat-5 F46,070 GTOInmarsatSuccess
+        352017-06-0321:07:00F9 FT B1035.1KSC LC-39ASpaceX CRS-112,708 LEO (ISS)NASA (CRS)Success
+        362017-06-2319:10:00F9 FT B1029.2KSC LC-39ABulgariaSat-13,669 GTOBulsatcomSuccess
+        372017-06-2520:25:00F9 FT B1036.1VAFB SLC-4EIridium NEXT 29,600 LEOIridium CommunicationsSuccess
+        382017-07-0523:38:00F9 FT B1037KSC LC-39AIntelsat 35e6,761 GTOIntelsatSuccess
+        392017-08-1416:31:00F9 B4 B1039.1KSC LC-39ASpaceX CRS-123,310 LEO (ISS)NASA (CRS)Success
+        402017-08-2418:51:00F9 FT B1038.1VAFB SLC-4EFormosat-5475 SSONSPOSuccess
+        412017-09-0714:00:00F9 B4 B1040.1KSC LC-39ABoeing X-37B OTV-54,990 LEOU.S. Air ForceSuccess
+        422017-10-0912:37:00F9 B4 B1041.1VAFB SLC-4EIridium NEXT 39,600 Polar LEOIridium CommunicationsSuccess
+        432017-10-1122:53:00F9 FT B1031.2KSC LC-39ASES-11 / EchoStar 1055,200 GTOSES EchoStarSuccess
+        442017-10-3019:34:00F9 B4 B1042.1KSC LC-39AKoreasat 5A3,500 GTOKT CorporationSuccess
+        452017-12-1515:36:00F9 FT B1035.2CCAFS SLC-40SpaceX CRS-132,205 LEO (ISS)NASA (CRS)Success
+        462017-12-231:27:00F9 FT B1036.2VAFB SLC-4EIridium NEXT 49,600 Polar LEOIridium CommunicationsSuccess
+        472018-01-081:00:00F9 B4 B1043.1CCAFS SLC-40ZumaClassifiedLEONorthrop GrummanSuccess (payload status unclear)
+        482018-01-3121:25:00F9 FT B1032.2CCAFS SLC-40GovSat-1 / SES-164,230 GTOSESSuccess
+        FH 12018-02-0620:45:00B1023.2 (side) , Heavy core B1033, B1025.2 (side)KSC LC-39AElon Musk's Tesla Roadster~1,250 Heliocentric 0.99–1.67 AU (close to Mars transfer orbit)SpaceXSuccess
+        492018-02-2214:17:00F9 FT B1038.2VAFB SLC-4EPaz Tintin A & B2,150 SSOHisdesat exactEarth SpaceXSuccess
+        502018-03-065:33:00F9 B4 B1044CCAFS SLC-40Hispasat 30W-6 PODSat6,092 GTOHispasat NovaWurksSuccess
+        512018-03-3014:14:00F9 B4 B1041.2VAFB SLC-4EIridium NEXT 59,600 Polar LEOIridium CommunicationsSuccess
+        522018-04-0220:30:00F9 B4 B1039.2CCAFS SLC-40SpaceX CRS-142,647 LEO (ISS)NASA (CRS)Success
+        532018-04-1822:51:00F9 B4 B1045.1CCAFS SLC-40Transiting Exoplanet Survey Satellite (TESS)362 HEONASA (LSP)Success
+        542018-05-1120:14:00F9 B5 B1046.1KSC LC-39ABangabandhu-13,600 GTOThales-Alenia/BTRCSuccess
+        552018-05-2219:47:58F9 B4 B1043.2VAFB SLC-4EIridium NEXT 6 GRACE-FO 1, 26,460 Polar LEOIridium Communications GFZ • NASASuccess
+        562018-06-044:45:00F9 B4 B1040.2CCAFS SLC-40SES-125,384 GTOSESSuccess
+        `;
+
+        // Define known launch site coordinates (needed because the raw data doesn't contain Lat/Lon directly)
+        const LAUNCH_SITE_COORDINATES = {
+            "CCAFS LC-40": { latitude: 28.5619, longitude: -80.5772 },
+            "KSC LC-39A": { latitude: 28.6083, longitude: -80.6039 },
+            "VAFB SLC-4E": { latitude: 34.632, longitude: -120.6108 },
+            // Add any other launch sites found in the actual full dataset, if applicable
+        };
+
+
+        // Function to show a temporary message
+        function showMessage(message, type = 'error') {
+            const msgBox = document.getElementById('messageBox');
+            msgBox.textContent = message;
+            msgBox.className = `absolute top-4 left-1/2 -translate-x-1/2 p-3 text-white rounded-md shadow-lg z-20`;
+            if (type === 'error') {
+                msgBox.classList.add('bg-red-600');
+            } else {
+                msgBox.classList.add('bg-green-600');
             }
-            canvas {
-                display: block;
-                width: 100%;
-                height: 100%;
-                background-color: #000;
-            } 
-            .input-group {
-                background-color: #161b22;
-                border: 1px solid #30363d;
-            } 
+            msgBox.classList.remove('hidden');
+            setTimeout(() => {
+                msgBox.classList.add('hidden');
+            }, 3000);
+        }
+
+        // Initialize Three.js scene
+        function init() {
+            const loadingIndicator = document.getElementById('loadingIndicator');
+            loadingIndicator.classList.remove('hidden');
+
+            const canvas = document.getElementById('spaceCanvas');
+
+            // Scene
+            scene = new THREE.Scene();
+
+            // Camera
+            camera = new THREE.PerspectiveCamera(75, canvas.clientWidth / canvas.clientHeight, 0.1, 10000);
+            camera.position.set(EARTH_RADIUS_SCALED * 5, EARTH_RADIUS_SCALED * 5, EARTH_RADIUS_SCALED * 5); // Start camera further out
+            camera.lookAt(0, 0, 0); // Look at the center of the scene (Earth)
+
+            // Renderer
+            renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
+            renderer.setSize(canvas.clientWidth, canvas.clientHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+
+            // OrbitControls for camera movement (mimicking Arcball or Trackball controls)
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true; // For smoother camera movement
+            controls.dampingFactor = 0.05;
+            controls.screenSpacePanning = false;
+            controls.maxDistance = EARTH_RADIUS_SCALED * 100;
+            controls.minDistance = EARTH_RADIUS_SCALED * 1.1; // Don't go inside the Earth
+
+            // Lighting
+            const ambientLight = new THREE.AmbientLight(0x404040); // Soft white light
+            scene.add(ambientLight);
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(500, 500, 500); // Simulate light from the sun
+            scene.add(directionalLight);
+
+            // Earth
+            const earthGeometry = new THREE.SphereGeometry(EARTH_RADIUS_SCALED, 64, 64);
+            const earthMaterial = new THREE.MeshPhongMaterial({ color: 0x0077ff, emissive: 0x000022 }); // Blueish, slightly glowing
+            earth = new THREE.Mesh(earthGeometry, earthMaterial);
+            scene.add(earth);
+
+            // Starfield Background
+            const starGeometry = new THREE.BufferGeometry();
+            const starMaterial = new THREE.PointsMaterial({ color: 0xffffff, size: 0.1, sizeAttenuation: true });
+            const starVertices = [];
+            for (let i = 0; i < 10000; i++) {
+                const x = (Math.random() - 0.5) * 2000;
+                const y = (Math.random() - 0.5) * 2000;
+                const z = (Math.random() - 0.5) * 2000;
+                starVertices.push(x, y, z);
+            }
+            starGeometry.setAttribute('position', new THREE.Float32BufferAttribute(starVertices, 3));
+            stars = new THREE.Points(starGeometry, starMaterial);
+            scene.add(stars);
+
+            // Initial trajectory line (empty)
+            const material = new THREE.LineBasicMaterial({ color: 0xffa500 }); // Orange trajectory
+            const points = [];
+            trajectoryLine = new THREE.Line(new THREE.BufferGeometry(), material);
+            scene.add(trajectoryLine);
+
+            // Group for SpaceX launch sites
+            spacexLaunchSiteGroup = new THREE.Group();
+            scene.add(spacexLaunchSiteGroup);
+
+            loadingIndicator.classList.add('hidden');
+
+            window.addEventListener('resize', onWindowResize, false);
+            document.getElementById('calculateTrajectory').addEventListener('click', calculateAndDrawTrajectory);
+            document.getElementById('toggleSpaceXSites').addEventListener('change', toggleSpaceXSitesVisibility);
+
+            // Load SpaceX data on initialization
+            loadSpaceXData();
+
+            animate();
+        }
+
+        // Handle window resizing
+        function onWindowResize() {
+            const canvas = document.getElementById('spaceCanvas');
+            camera.aspect = canvas.clientWidth / canvas.clientHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(canvas.clientWidth, canvas.clientHeight);
+            render();
+        }
+
+        // Animation loop
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update(); // Only required if controls.enableDamping is set to true
+            render();
+        }
+
+        // Render the scene
+        function render() {
+            renderer.render(scene, camera);
+        }
+
+        // --- Trajectory Calculation (Simplified Newtonian Gravity) ---
+        function calculateTrajectory(initialVelocityKmPerSec, launchAngleDeg, launchAltitudeKm) {
+            const points = [];
+            // Start position relative to Earth's center
+            let position = new THREE.Vector3(0, EARTH_RADIUS_KM + launchAltitudeKm, 0);
+            position.multiplyScalar(SCALE_FACTOR); // Scale to Three.js units
+
+            // Convert velocity from km/s to m/s for physics calculation, then scale
+            let velocityMagnitude = initialVelocityKmPerSec * 1000; // m/s
+            let launchAngleRad = THREE.MathUtils.degToRad(launchAngleDeg);
+
+            // For simplicity, defining velocity as components based on angle from horizontal.
+            // Launch is from (0, R+H, 0). Horizontal is effectively along Z, Vertical along Y.
+            const velY_local = velocityMagnitude * Math.sin(launchAngleRad); // Radial component
+            const velZ_local = velocityMagnitude * Math.cos(launchAngleRad); // Tangential component (along Z-axis)
+
+            let velocity = new THREE.Vector3(0, velY_local, velZ_local);
+            velocity.multiplyScalar(SCALE_FACTOR); // Scale for Three.js units
+
+            const dt = 10; // Time step in seconds
+            const maxSteps = 2000; // Max steps to prevent infinite loops
+
+            for (let i = 0; i < maxSteps; i++) {
+                points.push(position.clone());
+
+                // Calculate gravitational force
+                const distanceToEarthCenter = position.length(); // In scaled units
+                const distanceToEarthCenterMeters = distanceToEarthCenter / SCALE_FACTOR; // Back to meters
+
+                if (distanceToEarthCenterMeters < EARTH_RADIUS_KM * 1000 * 10 && distanceToEarthCenterMeters > (EARTH_RADIUS_KM * 1000 * 0.95)) { // Keep calculation within a reasonable range and avoid going too deep
+                    const forceMagnitude = (G * EARTH_MASS) / (distanceToEarthCenterMeters * distanceToEarthCenterMeters);
+                    const direction = position.clone().normalize().negate(); // Towards Earth center
+                    const acceleration = direction.multiplyScalar(forceMagnitude * SCALE_FACTOR); // Scaled acceleration
+
+                    // Update velocity and position
+                    velocity.add(acceleration.clone().multiplyScalar(dt));
+                    position.add(velocity.clone().multiplyScalar(dt));
+
+                    // Check if crashed into Earth
+                    if (position.length() < EARTH_RADIUS_SCALED) {
+                        // Trajectory hit Earth
+                        showMessage("Trajectory impacted Earth!", 'error');
+                        break;
+                    }
+                } else if (distanceToEarthCenterMeters >= EARTH_RADIUS_KM * 1000 * 10) {
+                    // Went too far, assumed escaped or lost
+                    showMessage("Trajectory escaped Earth's influence!", 'success');
+                    break;
+                } else {
+                    // Very close to center, indicating potential issue or already crashed.
+                    showMessage("Trajectory calculation halted (too close to Earth's surface or error).", 'error');
+                    break;
+                }
+            }
+            return points;
+        }
+
+        // Update the trajectory visualization
+        function calculateAndDrawTrajectory() {
+            const initialVelocity = parseFloat(document.getElementById('initialVelocity').value);
+            const launchAngle = parseFloat(document.getElementById('launchAngle').value);
+            const launchAltitude = parseFloat(document.getElementById('launchAltitude').value);
+
+            if (isNaN(initialVelocity) || isNaN(launchAngle) || isNaN(launchAltitude)) {
+                showMessage("Please enter valid numbers for all parameters.", 'error');
+                return;
+            }
+
+            // Remove existing trajectory if any
+            if (trajectoryLine) {
+                scene.remove(trajectoryLine);
+                trajectoryLine.geometry.dispose(); // Clean up old geometry
+            }
+
+            const trajectoryPoints = calculateTrajectory(initialVelocity, launchAngle, launchAltitude);
+
+            const geometry = new THREE.BufferGeometry().setFromPoints(trajectoryPoints);
+            const material = new THREE.LineBasicMaterial({ color: 0xffa500 });
+            trajectoryLine = new THREE.Line(geometry, material);
+            scene.add(trajectoryLine);
+
+            showMessage("Trajectory calculated!", 'success');
+            render();
+        }
+
+        // --- SpaceX Data Integration Functions ---
+
+        // Function to parse the raw text data
+        function parseSpaceXData(rawData) {
+            const lines = rawData.trim().split('\n');
+            const parsedData = [];
+
+            lines.forEach(line => {
+                // Trim whitespace and remove leading/trailing numbers like "1", "2", "FH 1"
+                // This regex captures the launch site assuming it's one of the known ones
+                const match = line.match(/(CCAFS LC-40|KSC LC-39A|VAFB SLC-4E)/);
+                
+                if (match && match[1]) {
+                    const launchSite = match[1];
+                    if (LAUNCH_SITE_COORDINATES[launchSite]) {
+                        parsedData.push({
+                            launchSite: launchSite,
+                            latitude: LAUNCH_SITE_COORDINATES[launchSite].latitude,
+                            longitude: LAUNCH_SITE_COORDINATES[launchSite].longitude
+                        });
+                    }
+                }
+            });
+            return parsedData;
+        }
+
+
+        // Function to convert Lat/Lon to 3D coordinates on a sphere
+        // Note: Three.js default is Y-up. Standard spherical coordinates often use Z-up.
+        // This function assumes Y-up (latitude is Y, longitude rotates around Y).
+        function latLonToCartesian(lat, lon, radius) {
+            const latRad = THREE.MathUtils.degToRad(lat);
+            const lonRad = THREE.MathUtils.degToRad(lon);
+
+            // Convert to Cartesian coordinates (Y-up)
+            // Longitude 0 is typically along the positive X-axis in a Z-up system,
+            // or along the positive Z-axis in a Y-up system if looking from +X.
+            // Let's set it up so 0 longitude is along positive X (if that's where your globe texture starts).
+            // A common way for Y-up:
+            const x = radius * Math.cos(latRad) * Math.cos(lonRad); // X-axis at 0 longitude
+            const y = radius * Math.sin(latRad);                   // Y-axis for latitude (up/down)
+            const z = radius * Math.cos(latRad) * Math.sin(lonRad); // Z-axis for longitude (forward/backward)
             
-         </style>
-    </head>
+            return new THREE.Vector3(x, y, z);
+        }
+
+        function loadSpaceXData() {
+            document.getElementById('spacexDataStatus').textContent = "Processing SpaceX data...";
+            try {
+                const parsedLaunches = parseSpaceXData(rawSpaceXData);
+
+                // Get unique launch sites from the parsed data
+                const uniqueLaunchSites = {};
+                parsedLaunches.forEach(launch => {
+                    if (launch.launchSite && LAUNCH_SITE_COORDINATES[launch.launchSite]) {
+                        uniqueLaunchSites[launch.launchSite] = {
+                            latitude: LAUNCH_SITE_COORDINATES[launch.launchSite].latitude,
+                            longitude: LAUNCH_SITE_COORDINATES[launch.launchSite].longitude,
+                            site: launch.launchSite
+                        };
+                    }
+                });
+                const sitesToPlot = Object.values(uniqueLaunchSites);
+
+                plotSpaceXLaunchSites(sitesToPlot);
+                document.getElementById('spacexDataStatus').textContent = `Loaded ${parsedLaunches.length} launches from ${sitesToPlot.length} unique launch sites.`;
+                showMessage("SpaceX data loaded successfully!", 'success');
+            } catch (error) {
+                console.error("Error loading SpaceX data:", error);
+                document.getElementById('spacexDataStatus').textContent = "Error loading SpaceX data. Check console for details.";
+                showMessage("Error loading SpaceX data. See console.", 'error');
+            }
+        }
+
+        function plotSpaceXLaunchSites(sites) {
+            // Clear existing markers
+            spacexLaunchSiteGroup.children = [];
+
+            const markerGeometry = new THREE.SphereGeometry(EARTH_RADIUS_SCALED * 0.03, 16, 16); // Small sphere marker
+            const markerMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000 }); // Red marker
+
+            sites.forEach(site => {
+                // Place marker slightly above the Earth's surface
+                const position = latLonToCartesian(site.latitude, site.longitude, EARTH_RADIUS_SCALED + (EARTH_RADIUS_SCALED * 0.005));
+                const marker = new THREE.Mesh(markerGeometry, markerMaterial);
+                marker.position.copy(position);
+                marker.name = `spacex_site_${site.site.replace(/\s/g, '_')}`; // Unique name
+                spacexLaunchSiteGroup.add(marker);
+            });
+            spacexLaunchSiteGroup.visible = document.getElementById('toggleSpaceXSites').checked; // Set initial visibility
+            render();
+        }
+
+        function toggleSpaceXSitesVisibility() {
+            spacexLaunchSiteGroup.visible = document.getElementById('toggleSpaceXSites').checked;
+            render();
+        }
+
+        // Start the application when the window loads
+        window.onload = function() {
+            init();
+            calculateAndDrawTrajectory(); // Draw initial trajectory on load
+        };
+
+    </script>
+</body>
 </html>
